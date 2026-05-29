@@ -1,0 +1,239 @@
+name: Deploy
+
+on:
+  workflow_dispatch:
+
+env:
+  REGION: us-central1
+  AR_REPO: fopai
+  PUBSUB_TOPIC: tg-raw-ingested
+  INGEST_LIMIT: ${{ vars.INGEST_LIMIT }}
+  DEBUG: "1"
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify WORKSPACE_ID
+        env:
+          WORKSPACE_ID: ${{ vars.WORKSPACE_ID }}
+        run: |
+          set -euo pipefail
+          test -n "$WORKSPACE_ID" || (echo "Missing WORKSPACE_ID" && exit 1)
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+          project_id: ${{ secrets.GCP_PROJECT_ID }}
+
+      - name: Setup gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure gcloud project
+        env:
+          PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+        run: |
+          set -euo pipefail
+          gcloud config set project "$PROJECT_ID"
+
+      - name: Configure Docker
+        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
+
+      - name: Verify required secrets
+        run: |
+          test -n "${{ secrets.GCP_PROJECT_ID }}" || (echo "Missing GCP_PROJECT_ID secret" && exit 1)
+
+      - name: Preflight API enablement
+        env:
+          PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+        run: |
+          set -euo pipefail
+          required_apis=(
+            run.googleapis.com
+            artifactregistry.googleapis.com
+            secretmanager.googleapis.com
+            firestore.googleapis.com
+          )
+          enabled_apis="$(gcloud services list --enabled --project "$PROJECT_ID" --format='value(config.name)')"
+          missing_apis=()
+
+          for api in "${required_apis[@]}"; do
+            if ! grep -qx "$api" <<<"$enabled_apis"; then
+              missing_apis+=("$api")
+            fi
+          done
+
+          if (( ${#missing_apis[@]} > 0 )); then
+            echo "Required APIs are not enabled in project $PROJECT_ID: ${missing_apis[*]}"
+            echo "Enable them once manually before running this workflow."
+            exit 1
+          fi
+
+      - name: Diagnostic gcloud context
+        if: env.DEBUG == '1'
+        env:
+          PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+        run: |
+          set -euo pipefail
+          echo "PROJECT_ID=$PROJECT_ID"
+          gcloud config list --project "$PROJECT_ID"
+          gcloud auth list --project "$PROJECT_ID"
+          required_secrets=(
+            OPENAI_API_KEY
+            TG_BOT_TOKEN
+            TELEGRAM_API_ID
+            TELEGRAM_API_HASH
+            TELETHON_STRING_SESSION
+          )
+          for secret in "${required_secrets[@]}"; do
+            enabled_version="$(gcloud secrets versions list "$secret" --project "$PROJECT_ID" \
+              --filter="state:ENABLED" --format="value(name)" | head -n 1)"
+            if [ -n "$enabled_version" ]; then
+              echo "Secret $secret has enabled versions"
+            else
+              echo "Secret $secret missing"
+            fi
+          done
+
+      - name: Preflight Secret Manager
+        env:
+          PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+        run: |
+          set -euo pipefail
+          required_secrets=(
+            OPENAI_API_KEY
+            TG_BOT_TOKEN
+            TELEGRAM_API_ID
+            TELEGRAM_API_HASH
+            TELETHON_STRING_SESSION
+          )
+          missing=()
+
+          for secret in "${required_secrets[@]}"; do
+            if ! gcloud secrets versions list "$secret" --project "$PROJECT_ID" \
+              --filter="state:ENABLED" --format="value(name)" | head -n 1 | grep -q .; then
+              missing+=("$secret")
+            fi
+          done
+
+          if (( ${#missing[@]} > 0 )); then
+            echo "Secret Manager preflight check failed."
+            if (( ${#missing[@]} > 0 )); then
+              echo "Missing secrets: ${missing[*]}"
+            fi
+            exit 1
+          fi
+
+
+      - name: Build and push images
+        env:
+          PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+          REGION: ${{ env.REGION }}
+          AR_REPO: ${{ env.AR_REPO }}
+        run: |
+          set -euo pipefail
+          INGEST_IMAGE="$REGION-docker.pkg.dev/$PROJECT_ID/$AR_REPO/ingest:${{ github.sha }}"
+          PROCESSOR_IMAGE="$REGION-docker.pkg.dev/$PROJECT_ID/$AR_REPO/processor:${{ github.sha }}"
+          APPROVER_IMAGE="$REGION-docker.pkg.dev/$PROJECT_ID/$AR_REPO/approver:${{ github.sha }}"
+
+          docker build --progress=plain -t "$INGEST_IMAGE" -f services/ingest/Dockerfile .
+          docker build --progress=plain -t "$PROCESSOR_IMAGE" -f services/processor/Dockerfile .
+          docker build --progress=plain -t "$APPROVER_IMAGE" -f services/approver/Dockerfile .
+
+          docker push "$INGEST_IMAGE"
+          docker push "$PROCESSOR_IMAGE"
+          docker push "$APPROVER_IMAGE"
+
+      - name: Deploy Cloud Run services
+        env:
+          PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+          REGION: ${{ env.REGION }}
+          AR_REPO: ${{ env.AR_REPO }}
+          PUBSUB_TOPIC: ${{ env.PUBSUB_TOPIC }}
+          WORKSPACE_ID: ${{ vars.WORKSPACE_ID }}
+          PUBSUB_VERIFICATION_AUDIENCE: ${{ vars.PUBSUB_VERIFICATION_AUDIENCE }}
+          APPROVER_NOTIFY_URL: ${{ vars.APPROVER_NOTIFY_URL }}
+        run: |
+          set -euo pipefail
+          APPROVER_IMAGE="$REGION-docker.pkg.dev/$PROJECT_ID/$AR_REPO/approver:${{ github.sha }}"
+
+          gcloud run deploy approver --quiet \
+            --image "$APPROVER_IMAGE" \
+            --region "$REGION" \
+            --project "$PROJECT_ID" \
+            --platform managed \
+            --allow-unauthenticated \
+            --set-env-vars WORKSPACE_ID="$WORKSPACE_ID" \
+            --set-secrets OPENAI_API_KEY=OPENAI_API_KEY:latest,TG_BOT_TOKEN=TG_BOT_TOKEN:latest
+
+          APPROVER_URL="$(gcloud run services describe approver --region "$REGION" --project "$PROJECT_ID" --format='value(status.url)')"
+          PROCESSOR_IMAGE="$REGION-docker.pkg.dev/$PROJECT_ID/$AR_REPO/processor:${{ github.sha }}"
+
+          gcloud run deploy processor --quiet \
+            --image "$PROCESSOR_IMAGE" \
+            --region "$REGION" \
+            --project "$PROJECT_ID" \
+            --platform managed \
+            --allow-unauthenticated \
+            --set-env-vars WORKSPACE_ID="$WORKSPACE_ID",PUBSUB_TOPIC="$PUBSUB_TOPIC",PUBSUB_VERIFICATION_AUDIENCE="$PUBSUB_VERIFICATION_AUDIENCE",APPROVER_NOTIFY_URL="$APPROVER_URL/internal/notify" \
+            --set-secrets OPENAI_API_KEY=OPENAI_API_KEY:latest
+
+      - name: Update Cloud Run ingest job
+        env:
+          PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+          REGION: ${{ env.REGION }}
+          AR_REPO: ${{ env.AR_REPO }}
+          PUBSUB_TOPIC: ${{ env.PUBSUB_TOPIC }}
+          INGEST_LIMIT: ${{ env.INGEST_LIMIT }}
+          WORKSPACE_ID: ${{ vars.WORKSPACE_ID }}
+          BOOTSTRAP_MAX_AGE_DAYS: ${{ vars.BOOTSTRAP_MAX_AGE_DAYS }}
+        run: |
+          set -euo pipefail
+          INGEST_IMAGE="$REGION-docker.pkg.dev/$PROJECT_ID/$AR_REPO/ingest:${{ github.sha }}"
+          test -n "$WORKSPACE_ID" || (echo "Missing WORKSPACE_ID env var for ingest job deployment" && exit 1)
+          test -n "$INGEST_LIMIT" || (echo "Missing INGEST_LIMIT env var for ingest job deployment" && exit 1)
+
+          cat > ingest.env <<EOF
+          WORKSPACE_ID=$WORKSPACE_ID
+          PUBSUB_TOPIC=$PUBSUB_TOPIC
+          INGEST_LIMIT=$INGEST_LIMIT
+          BOOTSTRAP_MAX_AGE_DAYS=$BOOTSTRAP_MAX_AGE_DAYS
+          EOF
+
+          if gcloud run jobs describe ingest --region "$REGION" --project "$PROJECT_ID" >/dev/null 2>&1; then
+            gcloud run jobs update ingest \
+              --image "$INGEST_IMAGE" \
+              --region "$REGION" \
+              --project "$PROJECT_ID" \
+              --env-vars-file ingest.env \
+              --set-secrets TELEGRAM_API_ID=TELEGRAM_API_ID:latest,TELEGRAM_API_HASH=TELEGRAM_API_HASH:latest,TELETHON_STRING_SESSION=TELETHON_STRING_SESSION:latest
+          else
+            gcloud run jobs create ingest \
+              --image "$INGEST_IMAGE" \
+              --region "$REGION" \
+              --project "$PROJECT_ID" \
+              --env-vars-file ingest.env \
+              --set-secrets TELEGRAM_API_ID=TELEGRAM_API_ID:latest,TELEGRAM_API_HASH=TELEGRAM_API_HASH:latest,TELETHON_STRING_SESSION=TELETHON_STRING_SESSION:latest
+          fi
+
+      - name: Output URLs
+        env:
+          PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+          REGION: ${{ env.REGION }}
+        run: |
+          set -euo pipefail
+          echo "Processor URL: $(gcloud run services describe processor --region $REGION --project "$PROJECT_ID" --format='value(status.url)')"
+          echo "Approver URL: $(gcloud run services describe approver --region $REGION --project "$PROJECT_ID" --format='value(status.url)')"
+          echo "Processor image: $(gcloud run services describe processor --region $REGION --project "$PROJECT_ID" --format='value(spec.template.spec.containers[0].image)')"
+          echo "Approver image: $(gcloud run services describe approver --region $REGION --project "$PROJECT_ID" --format='value(spec.template.spec.containers[0].image)')"
