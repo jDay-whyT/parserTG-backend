@@ -90,11 +90,15 @@ jobs:
           gcloud config list --project "$PROJECT_ID"
           gcloud auth list --project "$PROJECT_ID"
           required_secrets=(
-            OPENAI_API_KEY
+            OPENROUTER_API_KEY
             TG_BOT_TOKEN
             TELEGRAM_API_ID
             TELEGRAM_API_HASH
             TELETHON_STRING_SESSION
+            TWITTER_API_KEY
+            TWITTER_API_SECRET
+            TWITTER_ACCESS_TOKEN
+            TWITTER_ACCESS_SECRET
           )
           for secret in "${required_secrets[@]}"; do
             enabled_version="$(gcloud secrets versions list "$secret" --project "$PROJECT_ID" \
@@ -112,11 +116,15 @@ jobs:
         run: |
           set -euo pipefail
           required_secrets=(
-            OPENAI_API_KEY
+            OPENROUTER_API_KEY
             TG_BOT_TOKEN
             TELEGRAM_API_ID
             TELEGRAM_API_HASH
             TELETHON_STRING_SESSION
+            TWITTER_API_KEY
+            TWITTER_API_SECRET
+            TWITTER_ACCESS_TOKEN
+            TWITTER_ACCESS_SECRET
           )
           missing=()
 
@@ -174,8 +182,9 @@ jobs:
             --project "$PROJECT_ID" \
             --platform managed \
             --allow-unauthenticated \
+            --service-account "tg-parser-runner@$PROJECT_ID.iam.gserviceaccount.com" \
             --set-env-vars WORKSPACE_ID="$WORKSPACE_ID" \
-            --set-secrets OPENAI_API_KEY=OPENAI_API_KEY:latest,TG_BOT_TOKEN=TG_BOT_TOKEN:latest
+            --set-secrets OPENROUTER_API_KEY=OPENROUTER_API_KEY:latest,TG_BOT_TOKEN=TG_BOT_TOKEN:latest,TWITTER_API_KEY=TWITTER_API_KEY:latest,TWITTER_API_SECRET=TWITTER_API_SECRET:latest,TWITTER_ACCESS_TOKEN=TWITTER_ACCESS_TOKEN:latest,TWITTER_ACCESS_SECRET=TWITTER_ACCESS_SECRET:latest
 
           APPROVER_URL="$(gcloud run services describe approver --region "$REGION" --project "$PROJECT_ID" --format='value(status.url)')"
           PROCESSOR_IMAGE="$REGION-docker.pkg.dev/$PROJECT_ID/$AR_REPO/processor:${{ github.sha }}"
@@ -186,8 +195,9 @@ jobs:
             --project "$PROJECT_ID" \
             --platform managed \
             --allow-unauthenticated \
+            --service-account "tg-parser-runner@$PROJECT_ID.iam.gserviceaccount.com" \
             --set-env-vars WORKSPACE_ID="$WORKSPACE_ID",PUBSUB_TOPIC="$PUBSUB_TOPIC",PUBSUB_VERIFICATION_AUDIENCE="$PUBSUB_VERIFICATION_AUDIENCE",APPROVER_NOTIFY_URL="$APPROVER_URL/internal/notify" \
-            --set-secrets OPENAI_API_KEY=OPENAI_API_KEY:latest
+            --set-secrets OPENROUTER_API_KEY=OPENROUTER_API_KEY:latest
 
       - name: Update Cloud Run ingest job
         env:
@@ -216,15 +226,17 @@ jobs:
               --image "$INGEST_IMAGE" \
               --region "$REGION" \
               --project "$PROJECT_ID" \
+              --service-account "tg-parser-runner@$PROJECT_ID.iam.gserviceaccount.com" \
               --env-vars-file ingest.env \
-              --set-secrets TELEGRAM_API_ID=TELEGRAM_API_ID:latest,TELEGRAM_API_HASH=TELEGRAM_API_HASH:latest,TELETHON_STRING_SESSION=TELETHON_STRING_SESSION:latest
+              --set-secrets TELEGRAM_API_ID=TELEGRAM_API_ID:latest,TELEGRAM_API_HASH=TELEGRAM_API_HASH:latest,TELETHON_STRING_SESSION=TELETHON_STRING_SESSION:latest,TG_BOT_TOKEN=TG_BOT_TOKEN:latest,OPENROUTER_API_KEY=OPENROUTER_API_KEY:latest
           else
             gcloud run jobs create ingest \
               --image "$INGEST_IMAGE" \
               --region "$REGION" \
               --project "$PROJECT_ID" \
+              --service-account "tg-parser-runner@$PROJECT_ID.iam.gserviceaccount.com" \
               --env-vars-file ingest.env \
-              --set-secrets TELEGRAM_API_ID=TELEGRAM_API_ID:latest,TELEGRAM_API_HASH=TELEGRAM_API_HASH:latest,TELETHON_STRING_SESSION=TELETHON_STRING_SESSION:latest
+              --set-secrets TELEGRAM_API_ID=TELEGRAM_API_ID:latest,TELEGRAM_API_HASH=TELEGRAM_API_HASH:latest,TELETHON_STRING_SESSION=TELETHON_STRING_SESSION:latest,TG_BOT_TOKEN=TG_BOT_TOKEN:latest,OPENROUTER_API_KEY=OPENROUTER_API_KEY:latest
           fi
 
       - name: Output URLs
