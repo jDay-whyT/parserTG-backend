@@ -8,7 +8,6 @@ env:
   AR_REPO: fopai
   PUBSUB_TOPIC: tg-raw-ingested
   INGEST_LIMIT: ${{ vars.INGEST_LIMIT }}
-  DEBUG: "1"
 
 jobs:
   deploy:
@@ -50,44 +49,6 @@ jobs:
       - name: Configure Docker
         run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
 
-      - name: Verify required secrets
-        run: |
-          test -n "${{ secrets.GCP_PROJECT_ID }}" || (echo "Missing GCP_PROJECT_ID secret" && exit 1)
-
-
-      - name: Diagnostic gcloud context
-        if: env.DEBUG == '1'
-        env:
-          PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
-        run: |
-          set -euo pipefail
-          echo "PROJECT_ID=$PROJECT_ID"
-          gcloud config list --project "$PROJECT_ID"
-          gcloud auth list --project "$PROJECT_ID"
-          required_secrets=(
-            OPENROUTER_API_KEY
-            TG_BOT_TOKEN
-            TELEGRAM_API_ID
-            TELEGRAM_API_HASH
-            TELETHON_STRING_SESSION
-            TWITTER_API_KEY
-            TWITTER_API_SECRET
-            TWITTER_ACCESS_TOKEN
-            TWITTER_ACCESS_SECRET
-            THREADS_APP_ID
-            THREADS_APP_SECRET
-            THREADS_ACCESS_TOKEN
-            THREADS_USER_ID
-          )
-          for secret in "${required_secrets[@]}"; do
-            enabled_version="$(gcloud secrets versions list "$secret" --project "$PROJECT_ID" \
-              --filter="state:ENABLED" --format="value(name)" | head -n 1)"
-            if [ -n "$enabled_version" ]; then
-              echo "Secret $secret has enabled versions"
-            else
-              echo "Secret $secret missing"
-            fi
-          done
 
       - name: Preflight Secret Manager
         env:
@@ -119,10 +80,7 @@ jobs:
           done
 
           if (( ${#missing[@]} > 0 )); then
-            echo "Secret Manager preflight check failed."
-            if (( ${#missing[@]} > 0 )); then
-              echo "Missing secrets: ${missing[*]}"
-            fi
+            echo "Secret Manager preflight failed. Missing: ${missing[*]}"
             exit 1
           fi
 
