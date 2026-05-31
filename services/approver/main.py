@@ -5,7 +5,7 @@ import logging
 import os
 from typing import Any
 
-from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Request
 
 from shared.firestore import get_draft, get_workspace, save_post, server_timestamp, update_draft
 from shared.gpt_profiles import get_prompt
@@ -132,7 +132,7 @@ async def telegram_webhook_validation() -> dict[str, bool]:
 
 
 @app.post("/telegram/webhook")
-async def telegram_webhook(request: Request, x_telegram_bot_api_secret_token: str | None = Header(default=None)) -> dict[str, str]:
+async def telegram_webhook(request: Request, background_tasks: BackgroundTasks, x_telegram_bot_api_secret_token: str | None = Header(default=None)) -> dict[str, str]:
     if settings.tg_bot_token and x_telegram_bot_api_secret_token and x_telegram_bot_api_secret_token != settings.tg_bot_token:
         logger.warning("telegram_webhook_invalid_secret")
         return {"status": "unauthorized"}
@@ -155,7 +155,7 @@ async def telegram_webhook(request: Request, x_telegram_bot_api_secret_token: st
 
     try:
         if update_type == "callback_query":
-            return _handle_callback(update["callback_query"])
+            return _handle_callback(update["callback_query"], background_tasks)
         if update_type == "message":
             return _handle_message(update["message"])
     except Exception as exc:  # noqa: BLE001 - avoid webhook errors to Telegram
@@ -349,7 +349,7 @@ def _send_ingest_raw_message(draft: dict[str, Any], trace_id: str | None) -> Non
         update_draft(settings.workspace_id, draft["id"], {"ingest_message_id": message_id})
 
 
-def _handle_callback(callback: dict) -> dict[str, str]:
+def _handle_callback(callback: dict, background_tasks: BackgroundTasks) -> dict[str, str]:
     data = callback.get("data", "")
     callback_id = callback.get("id")
     if not callback_id:
@@ -367,23 +367,23 @@ def _handle_callback(callback: dict) -> dict[str, str]:
 
     if action == "tg_ingest":
         logger.info("telegram_callback_action", extra={"action": "TG_INGEST", "draft_id": draft_id})
-        _red_ingest_directed(draft_id, "tg", message_id=message_id, chat_id=chat_id, message_thread_id=message_thread_id)
-        _safe_answer_callback(callback_id, "TG -> review")
+        _safe_answer_callback(callback_id, "Генерую TG...")
+        background_tasks.add_task(_red_ingest_directed, draft_id, "tg", message_id=message_id, chat_id=chat_id, message_thread_id=message_thread_id)
         return {"status": "tg_ingest"}
     if action == "social_ingest":
         logger.info("telegram_callback_action", extra={"action": "SOCIAL_INGEST", "draft_id": draft_id})
-        _red_ingest_directed(draft_id, "social", message_id=message_id, chat_id=chat_id, message_thread_id=message_thread_id)
-        _safe_answer_callback(callback_id, "Social -> review")
+        _safe_answer_callback(callback_id, "Генерую Social...")
+        background_tasks.add_task(_red_ingest_directed, draft_id, "social", message_id=message_id, chat_id=chat_id, message_thread_id=message_thread_id)
         return {"status": "social_ingest"}
     if action == "both_ingest":
         logger.info("telegram_callback_action", extra={"action": "BOTH_INGEST", "draft_id": draft_id})
-        _red_ingest_directed(draft_id, "both", message_id=message_id, chat_id=chat_id, message_thread_id=message_thread_id)
-        _safe_answer_callback(callback_id, "TG + Social -> review")
+        _safe_answer_callback(callback_id, "Генерую TG + Social...")
+        background_tasks.add_task(_red_ingest_directed, draft_id, "both", message_id=message_id, chat_id=chat_id, message_thread_id=message_thread_id)
         return {"status": "both_ingest"}
     if action == "red_ingest":
         logger.info("telegram_callback_action", extra={"action": "RED_INGEST", "draft_id": draft_id})
-        _red_ingest(draft_id, message_id=message_id, chat_id=chat_id, message_thread_id=message_thread_id)
-        _safe_answer_callback(callback_id, "Moved to review")
+        _safe_answer_callback(callback_id, "Генерую...")
+        background_tasks.add_task(_red_ingest, draft_id, message_id=message_id, chat_id=chat_id, message_thread_id=message_thread_id)
         return {"status": "red_ingest"}
     if action == "skip_ingest":
         logger.info("telegram_callback_action", extra={"action": "SKIP_INGEST", "draft_id": draft_id})
@@ -407,8 +407,8 @@ def _handle_callback(callback: dict) -> dict[str, str]:
         return {"status": "posted_threads"}
     if action == "red_review":
         logger.info("telegram_callback_action", extra={"action": "RED_REVIEW", "draft_id": draft_id})
-        _red_review(draft_id, message_id=message_id, chat_id=chat_id, message_thread_id=message_thread_id)
-        _safe_answer_callback(callback_id, "Updated")
+        _safe_answer_callback(callback_id, "Генерую...")
+        background_tasks.add_task(_red_review, draft_id, message_id=message_id, chat_id=chat_id, message_thread_id=message_thread_id)
         return {"status": "red_review"}
     if action == "skip_review":
         logger.info("telegram_callback_action", extra={"action": "SKIP_REVIEW", "draft_id": draft_id})
@@ -471,10 +471,12 @@ def _red_ingest_directed(
 ) -> None:
     editor = get_editor()
     if editor is None:
-        raise HTTPException(status_code=503, detail="OpenAI client unavailable")
+        logger.warning("editor_unavailable", extra={"draft_id": draft_id})
+        return
     draft = get_draft(settings.workspace_id, draft_id)
     if not draft:
-        raise HTTPException(status_code=404, detail="draft not found")
+        logger.warning("draft_not_found", extra={"draft_id": draft_id})
+        return
     origin_text = (draft.get("origin_text") or "").strip()
     if not origin_text:
         update_draft(settings.workspace_id, draft_id, {"status": "SKIPPED"})
@@ -491,7 +493,7 @@ def _red_ingest_directed(
         except Exception as exc:
             update_draft(settings.workspace_id, draft_id, {"status": "SKIPPED"})
             logger.warning("openai_summarize_failed", extra={"draft_id": draft_id, "error": str(exc)})
-            raise HTTPException(status_code=502, detail="OpenAI summarization failed") from exc
+            return
         if summary.get("skip") is True:
             update_draft(settings.workspace_id, draft_id, {"status": "SKIPPED"})
             return
@@ -523,10 +525,12 @@ def _red_ingest(
 ) -> None:
     editor = get_editor()
     if editor is None:
-        raise HTTPException(status_code=503, detail="OpenAI client unavailable")
+        logger.warning("editor_unavailable", extra={"draft_id": draft_id})
+        return
     draft = get_draft(settings.workspace_id, draft_id)
     if not draft:
-        raise HTTPException(status_code=404, detail="draft not found")
+        logger.warning("draft_not_found", extra={"draft_id": draft_id})
+        return
     origin_text = (draft.get("origin_text") or "").strip()
     if not origin_text:
         update_draft(settings.workspace_id, draft_id, {"status": "SKIPPED"})
@@ -535,10 +539,10 @@ def _red_ingest(
     prompt = get_prompt(workspace.get("gpt_profile"))
     try:
         summary = editor.summarize(origin_text, system_prompt=prompt)
-    except Exception as exc:  # noqa: BLE001 - OpenAI errors should mark failed
+    except Exception as exc:
         update_draft(settings.workspace_id, draft_id, {"status": "SKIPPED"})
         logger.warning("openai_summarize_failed", extra={"draft_id": draft_id, "error": str(exc)})
-        raise HTTPException(status_code=502, detail="OpenAI summarization failed") from exc
+        return
     if summary.get("skip") is True:
         update_draft(settings.workspace_id, draft_id, {"status": "SKIPPED"})
         return
@@ -666,10 +670,12 @@ def _red_review(
 ) -> None:
     editor = get_editor()
     if editor is None:
-        raise HTTPException(status_code=503, detail="OpenAI client unavailable")
+        logger.warning("editor_unavailable", extra={"draft_id": draft_id})
+        return
     draft = get_draft(settings.workspace_id, draft_id)
     if not draft:
-        raise HTTPException(status_code=404, detail="draft not found")
+        logger.warning("draft_not_found", extra={"draft_id": draft_id})
+        return
     post_targets = draft.get("post_targets") or "tg"
     origin_text = (draft.get("origin_text") or "").strip()
 
@@ -686,7 +692,7 @@ def _red_review(
         except Exception as exc:
             update_draft(settings.workspace_id, draft_id, {"status": "SKIPPED"})
             logger.warning("openai_summarize_failed", extra={"draft_id": draft_id, "error": str(exc)})
-            raise HTTPException(status_code=502, detail="OpenAI summarization failed") from exc
+            return
         if summary.get("skip") is True:
             update_draft(settings.workspace_id, draft_id, {"status": "SKIPPED"})
             return
