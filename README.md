@@ -6,25 +6,25 @@ Automated news pipeline for [@aifopukr](https://t.me/aifopukr) — content about
 
 ```
 Sources
-├── Telethon (MTProto) → @nbu_ua, @tax_gov_ua, @verkhovnaradaukrainy, @Minfin_com_ua, @bu911
+├── Telethon (MTProto) → @nbu_ua, @tax_gov_ua, @Minfin_com_ua, @bu911
 └── CloakBrowser → buhgalter911.com (via @bu911 links, auto-enriches full article text)
         ↓
    Pub/Sub (tg-raw-ingested)
         ↓
    Processor (Cloud Run Service)
    - Creates INGESTED drafts in Firestore
-   - Notifies Approver
+   - Notifies Approver (no GPT)
         ↓
    Approver (Cloud Run Service) — Telegram bot
    - Ingest thread: [TG] [Social] [Both] [SKIP]
-   - TG → GPT expert post → review thread → [POST] [RED] [SKIP]
-   - Social → GPT provocative post → review thread → [POST] [RED] [SKIP]
+   - TG → GPT expert post → review thread → [📢 TG] [🔄 RED] [Skip]
+   - Social → GPT provocative post → review thread → [🐦 Twitter] [🧵 Threads]
    - Both → generates both versions
         ↓
    Posting:
    - TG channel @aifopukr
    - Twitter (Tweepy, free tier)
-   - Threads (planned)
+   - Threads (Meta API)
         ↓
    Firestore posts/ — knowledge base for future agents
 ```
@@ -36,22 +36,24 @@ Sources
 | Ingest | Telethon (MTProto), CloakBrowser (Playwright stealth) |
 | Queue | Google Pub/Sub |
 | Storage | Firestore (Native, `nam5`) |
-| AI | OpenRouter (DeepSeek V3 / Gemini Flash free) or OpenAI |
-| Posting | python-telegram-bot, Tweepy |
+| AI | OpenRouter (`deepseek/deepseek-chat:free`) or OpenAI fallback |
+| Posting | python-telegram-bot, Tweepy, Threads API |
 | Infra | Cloud Run Jobs + Services, Cloud Scheduler |
 | Secrets | Google Secret Manager |
 
 ## Infrastructure
 
-| Service | Type | Trigger | Min instances |
-|---------|------|---------|---------------|
-| ingest | Job | Cloud Scheduler (every 3h) | 0 |
-| processor | Service | Pub/Sub push | 0 |
-| approver | Service | Telegram webhook | 0 |
+| Service | Type | Trigger | Instances |
+|---------|------|---------|-----------|
+| ingest | Job | Cloud Scheduler (every 15min) | 0 |
+| processor | Service | Pub/Sub push | 0–2 |
+| approver | Service | Telegram webhook | 0–2 |
 
 ## GCP Setup
 
-- Region: `us-central1`
+- Region: `europe-west1`
+- Project: `optimum-tea-481710-u3`
+- SA: `tg-parser-runner@optimum-tea-481710-u3.iam.gserviceaccount.com` (runtime + deploy)
 - Firestore: `(default)` database in `nam5` (Native mode)
 
 Enable APIs once (manual):
@@ -63,7 +65,7 @@ Enable APIs once (manual):
 TELEGRAM_API_ID
 TELEGRAM_API_HASH
 TELETHON_STRING_SESSION
-OPENROUTER_API_KEY          # or OPENAI_API_KEY
+OPENROUTER_API_KEY
 TG_BOT_TOKEN
 BUHGALTER911_LOGIN
 BUHGALTER911_PASSWORD
@@ -71,31 +73,25 @@ TWITTER_API_KEY
 TWITTER_API_SECRET
 TWITTER_ACCESS_TOKEN
 TWITTER_ACCESS_SECRET
+THREADS_APP_ID
+THREADS_APP_SECRET
+THREADS_ACCESS_TOKEN
+THREADS_USER_ID
 ```
 
-## Environment Variables
+## GitHub Variables
 
 ```bash
-WORKSPACE_ID=fop
-GROUP_CHAT_ID=-1003277785413
-INGEST_THREAD_ID=357
-REVIEW_THREAD_ID=358
-PUBLISH_CHANNEL_ID=@aifopukr
-GPT_PROFILE=default
-SOURCE_CHATS=@nbu_ua,@tax_gov_ua,@verkhovnaradaukrainy,@Minfin_com_ua,@bu911
-PUBSUB_TOPIC=tg-raw-ingested
-PUBSUB_VERIFICATION_AUDIENCE=https://PROCESSOR_URL
-APPROVER_NOTIFY_URL=https://APPROVER_URL/internal/notify
+WORKSPACE_ID=fop_ukr
 INGEST_LIMIT=50
-OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
-OPENROUTER_MODEL=deepseek/deepseek-chat-v3-0324:free
+BOOTSTRAP_MAX_AGE_DAYS=        # leave empty
+PUBSUB_VERIFICATION_AUDIENCE=  # leave empty
+APPROVER_NOTIFY_URL=           # set after first deploy
 ```
-
-For local dev: copy `.env.example` to `.env`.
 
 ## LLM Backend
 
-Set `OPENROUTER_API_KEY` for OpenRouter (free DeepSeek/Gemini) or `OPENAI_API_KEY` for OpenAI.
+Set `OPENROUTER_API_KEY` for OpenRouter (free DeepSeek) or `OPENAI_API_KEY` for OpenAI.
 If both are set, OpenRouter takes priority.
 
 ## GPT Profiles
@@ -103,7 +99,7 @@ If both are set, OpenRouter takes priority.
 | Profile | Use | Tone |
 |---------|-----|------|
 | `default` | TG channel posts | Expert, analytical, references PKU/NBU |
-| `social` | Twitter/Threads | Provocative, system-bullying, drives engagement |
+| `social` | Twitter/Threads | Provocative, drives engagement, no hashtags |
 
 ## Web Enricher (CloakBrowser)
 
@@ -123,62 +119,57 @@ workspaces/{WORKSPACE_ID}
     type, tg_entity, enabled, last_message_id, last_message_date, bootstrapped
 
   drafts/{draft_id}
-    source_id, source_type, origin_chat, origin_text, origin_url?
-    red_text, twitter_text, post_targets (tg|social|both)
+    source_id, source_type, origin_chat, origin_text
+    tg_text, social_text, post_targets (tg|social|both)
     status: INGESTED → RED_READY → POSTED | SKIPPED
-    ingest_message_id, review_message_id, twitter_post_id
+    ingest_message_id, review_message_id
+    tg_posted, twitter_posted, threads_posted
     posted_at
 
   posts/{draft_id}          ← knowledge base for future agents
-    tg_text, twitter_text, origin_text, source_id, source_type, posted_at
+    tg_text, social_text, origin_text, source_id, source_type, posted_at
 ```
 
 ## First-time Bootstrap
 
 ```bash
 # 1. Seed workspace + sources
-export WORKSPACE_ID=fop
-export WORKSPACE_TITLE=FOP
-export GROUP_CHAT_ID=-1003277785413
-export INGEST_THREAD_ID=357
-export REVIEW_THREAD_ID=358
-export PUBLISH_CHANNEL_ID=@aifopukr
-export GPT_PROFILE=default
-export SOURCE_CHATS=@nbu_ua,@tax_gov_ua,@verkhovnaradaukrainy,@Minfin_com_ua,@bu911
-
 python -m scripts.init_firestore
 
-# 2. Set Telegram webhook
-curl -X POST "https://api.telegram.org/bot$TG_BOT_TOKEN/setWebhook" \
-  -d "url=https://APPROVER_URL/telegram/webhook" \
-  -d "secret_token=$TG_BOT_TOKEN"
+# 2. Deploy via GitHub Actions (workflow_dispatch)
 
-# 3. Run ingest twice (second run should fetch ~0 new messages)
-gcloud run jobs execute ingest --region us-central1 --wait
-gcloud run jobs execute ingest --region us-central1 --wait
+# 3. Set Telegram webhook
+TG_BOT_TOKEN=... WEBHOOK_URL=https://APPROVER_URL/telegram/webhook \
+  python tools/set_webhook.py
+
+# 4. Bootstrap ingest (sets last_message_id to current, publishes nothing)
+gcloud run jobs execute ingest --region europe-west1 --wait
+# Verify: second run should fetch 0 new messages
+gcloud run jobs execute ingest --region europe-west1 --wait
 ```
 
-## Pub/Sub Setup
+## Re-bootstrap sources (if spam from old messages)
 
 ```bash
-gcloud pubsub topics create tg-raw-ingested
-
-gcloud pubsub subscriptions create tg-raw-ingested-processor \
-  --topic tg-raw-ingested \
-  --push-endpoint https://PROCESSOR_URL/pubsub/push \
-  --push-auth-service-account PROCESSOR_PUSH_SA@PROJECT_ID.iam.gserviceaccount.com \
-  --push-auth-token-audience https://PROCESSOR_URL
-```
-
-## Secrets Bootstrap
-
-```bash
-scripts/bootstrap-secrets.sh <gcp-project-id>
+# Reset all sources to bootstrap from current latest
+GOOGLE_APPLICATION_CREDENTIALS=~/.config/gcloud/application_default_credentials.json \
+python3 -c "
+from google.cloud import firestore
+db = firestore.Client(project='optimum-tea-481710-u3')
+for doc in db.collection('workspaces/fop_ukr/sources').stream():
+    if doc.to_dict().get('enabled', True):
+        doc.reference.update({'bootstrapped': False, 'last_message_id': 0})
+        print('reset:', doc.id)
+"
+gcloud run jobs execute ingest --region europe-west1 --wait
 ```
 
 ## CI/CD
 
-GitHub Actions (`workflow_dispatch` only). Required secrets: `GCP_PROJECT_ID`, `GCP_WORKLOAD_IDENTITY_PROVIDER`, `GCP_SERVICE_ACCOUNT`. Required variables: see `README.architecture.md`.
+GitHub Actions (`workflow_dispatch` only).
+
+Required secrets: `GCP_PROJECT_ID`, `GCP_WIF_PROVIDER`, `GCP_SERVICE_ACCOUNT`
+Required variables: `WORKSPACE_ID`, `INGEST_LIMIT`
 
 ## Tests
 
