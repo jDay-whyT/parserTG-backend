@@ -147,7 +147,7 @@ def create_draft(
         "origin_message_id": origin_message_id,
         "origin_message_date": origin_message_date,
         "origin_text": origin_text,
-        "red_text": None,
+        "tg_text": None,
         "status": status,
         "review_message_id": review_message_id,
         "ingest_message_id": ingest_message_id,
@@ -182,7 +182,7 @@ def save_post(
     origin_chat: str,
     origin_text: str,
     tg_text: str,
-    twitter_text: str = "",
+    social_text: str = "",
 ) -> None:
     (
         get_client()
@@ -198,7 +198,7 @@ def save_post(
                 "origin_chat": origin_chat,
                 "origin_text": origin_text,
                 "tg_text": tg_text,
-                "twitter_text": twitter_text,
+                "social_text": social_text,
                 "posted_at": server_timestamp(),
             }
         )

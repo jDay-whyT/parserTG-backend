@@ -21,8 +21,8 @@ _MOCK_DRAFT = {
     "source_type": "telegram",
     "origin_chat": "@nbu_ua",
     "origin_text": "Повний текст новини про ФОП який довший за двадцять символів",
-    "red_text": "Відредагований текст для TG каналу",
-    "twitter_text": "Провокаційний твіт #ФОП",
+    "tg_text": "Відредагований текст для TG каналу",
+    "social_text": "Провокаційний пост про ФОП",
     "post_targets": "tg",
     "status": "RED_READY",
 }
@@ -87,10 +87,10 @@ class TestTelegramWebhook:
         assert r.json()["status"] == "skipped"
 
     def test_post_review_callback(self, client):
-        update = _callback_update("nbu_ua-123", "post_review")
+        update = _callback_update("nbu_ua-123", "post_tg_review")
         r = client.post("/telegram/webhook", json=update)
         assert r.status_code == 200
-        assert r.json()["status"] == "posted"
+        assert r.json()["status"] == "posted_tg"
 
     def test_skip_review_callback(self, client):
         update = _callback_update("nbu_ua-123", "skip_review")

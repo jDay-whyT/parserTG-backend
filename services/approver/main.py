@@ -13,6 +13,7 @@ from shared.logging import configure_logging
 from shared.openai_client import get_editor
 from shared.settings import settings
 from shared.telegram import TelegramAPIError, TelegramBot
+from shared.threads_client import post_thread
 from shared.twitter_client import post_tweet
 
 logger = logging.getLogger("approver")
@@ -183,7 +184,7 @@ def _send_review_message(draft: dict[str, Any]) -> int | None:
     if review_thread_id is None:
         logger.info("review_thread_id_missing")
     text = _format_review_text(draft)
-    keyboard = _build_review_keyboard(draft["id"])
+    keyboard = _build_review_keyboard(draft["id"], draft)
     try:
         response = bot.send_message(
             admin_chat_id,
@@ -236,23 +237,23 @@ def _format_review_text(draft: dict[str, Any]) -> str:
     parts = [header]
 
     if post_targets in ("tg", "both"):
-        red_text = (draft.get("red_text") or "").strip()
-        if not red_text:
-            red_text = (draft.get("origin_text") or "").strip()
-        parts.append(html.escape(red_text))
+        tg_text = (draft.get("tg_text") or "").strip()
+        if not tg_text:
+            tg_text = (draft.get("origin_text") or "").strip()
+        parts.append(html.escape(tg_text))
 
     if post_targets in ("social", "both"):
-        twitter_text = (draft.get("twitter_text") or "").strip()
-        if twitter_text:
-            parts.append(f"[Social]\n{html.escape(twitter_text)}")
+        social_text = (draft.get("social_text") or "").strip()
+        if social_text:
+            parts.append(f"[Social]\n{html.escape(social_text)}")
 
     return "\n\n".join(parts).strip()
 
 
 def _format_publish_text(draft: dict[str, Any]) -> str:
-    red_text = (draft.get("red_text") or "").strip()
-    if red_text:
-        return red_text
+    tg_text = (draft.get("tg_text") or "").strip()
+    if tg_text:
+        return tg_text
     return (draft.get("origin_text") or "").strip()
 
 
@@ -389,11 +390,21 @@ def _handle_callback(callback: dict) -> dict[str, str]:
         _skip_draft(draft_id, message_id=message_id, chat_id=chat_id, message_thread_id=message_thread_id)
         _safe_answer_callback(callback_id, "Skipped")
         return {"status": "skipped"}
-    if action == "post_review":
-        logger.info("telegram_callback_action", extra={"action": "POST_REVIEW", "draft_id": draft_id})
-        _post_draft(draft_id, message_id=message_id, chat_id=chat_id, message_thread_id=message_thread_id)
-        _safe_answer_callback(callback_id, "Posted")
-        return {"status": "posted"}
+    if action == "post_tg_review":
+        logger.info("telegram_callback_action", extra={"action": "POST_TG", "draft_id": draft_id})
+        _post_platform(draft_id, "tg", message_id=message_id, chat_id=chat_id, message_thread_id=message_thread_id)
+        _safe_answer_callback(callback_id, "Posted to TG")
+        return {"status": "posted_tg"}
+    if action == "post_twitter_review":
+        logger.info("telegram_callback_action", extra={"action": "POST_TWITTER", "draft_id": draft_id})
+        _post_platform(draft_id, "twitter", message_id=message_id, chat_id=chat_id, message_thread_id=message_thread_id)
+        _safe_answer_callback(callback_id, "Posted to Twitter")
+        return {"status": "posted_twitter"}
+    if action == "post_threads_review":
+        logger.info("telegram_callback_action", extra={"action": "POST_THREADS", "draft_id": draft_id})
+        _post_platform(draft_id, "threads", message_id=message_id, chat_id=chat_id, message_thread_id=message_thread_id)
+        _safe_answer_callback(callback_id, "Posted to Threads")
+        return {"status": "posted_threads"}
     if action == "red_review":
         logger.info("telegram_callback_action", extra={"action": "RED_REVIEW", "draft_id": draft_id})
         _red_review(draft_id, message_id=message_id, chat_id=chat_id, message_thread_id=message_thread_id)
@@ -423,18 +434,18 @@ def _handle_message(message: dict) -> dict[str, str]:
     rest = header_parts[2:]
     if rest:
         body_text = " ".join(rest) + ("\n" + body_text if body_text else "")
-    red_text = body_text.strip()
-    if not red_text:
+    tg_text = body_text.strip()
+    if not tg_text:
         logger.warning("telegram_edit_empty_body", extra={"draft_id": draft_id})
         return {"status": "ignored"}
-    update_draft(settings.workspace_id, draft_id, {"red_text": red_text, "status": "RED_READY"})
+    update_draft(settings.workspace_id, draft_id, {"tg_text": tg_text, "status": "RED_READY"})
     draft = get_draft(settings.workspace_id, draft_id)
     if draft:
         _refresh_review_message(draft, chat_id=message.get("chat", {}).get("id"), message_id=message.get("message_id"))
     return {"status": "edited"}
 
 
-def _build_red_text(summary: dict[str, Any], fallback: str) -> str:
+def _build_tg_text(summary: dict[str, Any], fallback: str) -> str:
     title = (summary.get("title") or "").strip()
     body = (summary.get("body") or "").strip()
     if title and body:
@@ -442,11 +453,11 @@ def _build_red_text(summary: dict[str, Any], fallback: str) -> str:
     return (title or body or fallback).strip()
 
 
-def _safe_generate_tweet(editor: Any, source_text: str, draft_id: str) -> str:
+def _safe_generate_social(editor: Any, source_text: str, draft_id: str) -> str:
     try:
-        return editor.generate_tweet(source_text)
+        return editor.generate_social(source_text)
     except Exception as exc:
-        logger.warning("generate_tweet_failed", extra={"draft_id": draft_id, "error": str(exc)})
+        logger.warning("generate_social_failed", extra={"draft_id": draft_id, "error": str(exc)})
         return ""
 
 
@@ -469,8 +480,8 @@ def _red_ingest_directed(
         update_draft(settings.workspace_id, draft_id, {"status": "SKIPPED"})
         return
 
-    red_text = ""
-    twitter_text = ""
+    tg_text = ""
+    social_text = ""
 
     if target in ("tg", "both"):
         workspace = _workspace_config()
@@ -484,14 +495,14 @@ def _red_ingest_directed(
         if summary.get("skip") is True:
             update_draft(settings.workspace_id, draft_id, {"status": "SKIPPED"})
             return
-        red_text = _build_red_text(summary, origin_text)
+        tg_text = _build_tg_text(summary, origin_text)
 
     if target in ("social", "both"):
-        twitter_text = _safe_generate_tweet(editor, origin_text, draft_id)
+        social_text = _safe_generate_social(editor, origin_text, draft_id)
 
     update_draft(settings.workspace_id, draft_id, {
-        "red_text": red_text or None,
-        "twitter_text": twitter_text or None,
+        "tg_text": tg_text or None,
+        "social_text": social_text or None,
         "post_targets": target,
         "status": "RED_READY",
     })
@@ -531,9 +542,9 @@ def _red_ingest(
     if summary.get("skip") is True:
         update_draft(settings.workspace_id, draft_id, {"status": "SKIPPED"})
         return
-    red_text = _build_red_text(summary, origin_text)
-    twitter_text = _safe_generate_tweet(editor, origin_text, draft_id)
-    update_draft(settings.workspace_id, draft_id, {"red_text": red_text, "twitter_text": twitter_text, "status": "RED_READY"})
+    tg_text = _build_tg_text(summary, origin_text)
+    social_text = _safe_generate_social(editor, origin_text, draft_id)
+    update_draft(settings.workspace_id, draft_id, {"tg_text": tg_text, "social_text": social_text, "status": "RED_READY"})
     draft = get_draft(settings.workspace_id, draft_id)
     if draft:
         review_message_id = _send_review_message(draft)
@@ -554,8 +565,10 @@ def _skip_draft(
         bot.safe_delete_message(chat_id, message_id, draft_id=draft_id)
 
 
-def _post_draft(
+def _post_platform(
     draft_id: str,
+    platform: str,
+    *,
     message_id: int | None,
     chat_id: int | None,
     message_thread_id: int | None,
@@ -563,16 +576,16 @@ def _post_draft(
     draft = get_draft(settings.workspace_id, draft_id)
     if not draft:
         raise HTTPException(status_code=404, detail="draft not found")
-    if draft.get("status") == "POSTED":
-        return
-    if draft.get("status") not in {"RED_READY"}:
+    if draft.get("status") not in {"RED_READY", "POSTED"}:
         raise HTTPException(status_code=400, detail="draft not publishable")
 
-    post_targets = draft.get("post_targets") or "tg"
     workspace = _workspace_config()
-    tg_text = ""
+    updates: dict[str, Any] = {}
 
-    if post_targets in ("tg", "both"):
+    if platform == "tg":
+        if draft.get("tg_posted"):
+            _safe_answer_callback_noop = None
+            return
         publish_channel = workspace.get("publish_channel")
         if not publish_channel:
             raise HTTPException(status_code=400, detail="publish channel missing")
@@ -588,35 +601,61 @@ def _post_draft(
         published_message_id = response.get("result", {}).get("message_id")
         if published_message_id:
             logger.info("telegram_publish_success", extra={"channel": publish_channel, "channel_message_id": published_message_id, "draft_id": draft_id})
+        updates["tg_posted"] = True
+        try:
+            save_post(
+                settings.workspace_id,
+                draft_id=draft_id,
+                source_id=draft.get("source_id") or "",
+                source_type=draft.get("source_type") or "telegram",
+                origin_chat=draft.get("origin_chat") or "",
+                origin_text=draft.get("origin_text") or "",
+                tg_text=tg_text,
+                social_text=(draft.get("social_text") or "").strip(),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("save_post_failed", extra={"draft_id": draft_id, "error": str(exc)})
 
-    update_draft(settings.workspace_id, draft_id, {"status": "POSTED", "posted_at": server_timestamp()})
+    elif platform == "twitter":
+        if draft.get("twitter_posted"):
+            return
+        social_text = (draft.get("social_text") or "").strip()
+        if not social_text:
+            logger.warning("social_text_missing_for_twitter", extra={"draft_id": draft_id})
+            return
+        try:
+            tweet_id = post_tweet(social_text)
+            if tweet_id:
+                updates["twitter_post_id"] = tweet_id
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("twitter_post_failed", extra={"draft_id": draft_id, "error": str(exc)})
+            return
+        updates["twitter_posted"] = True
 
-    try:
-        save_post(
-            settings.workspace_id,
-            draft_id=draft_id,
-            source_id=draft.get("source_id") or "",
-            source_type=draft.get("source_type") or "telegram",
-            origin_chat=draft.get("origin_chat") or "",
-            origin_text=draft.get("origin_text") or "",
-            tg_text=tg_text,
-            twitter_text=(draft.get("twitter_text") or "").strip(),
-        )
-    except Exception as exc:
-        logger.warning("save_post_failed", extra={"draft_id": draft_id, "error": str(exc)})
+    elif platform == "threads":
+        if draft.get("threads_posted"):
+            return
+        social_text = (draft.get("social_text") or "").strip()
+        if not social_text:
+            logger.warning("social_text_missing_for_threads", extra={"draft_id": draft_id})
+            return
+        try:
+            thread_id = post_thread(social_text)
+            if thread_id:
+                updates["threads_post_id"] = thread_id
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("threads_post_failed", extra={"draft_id": draft_id, "error": str(exc)})
+            return
+        updates["threads_posted"] = True
 
-    if post_targets in ("social", "both"):
-        twitter_text = (draft.get("twitter_text") or "").strip()
-        if twitter_text:
-            try:
-                tweet_id = post_tweet(twitter_text)
-                if tweet_id:
-                    update_draft(settings.workspace_id, draft_id, {"twitter_post_id": tweet_id})
-            except Exception as exc:
-                logger.warning("twitter_post_failed", extra={"draft_id": draft_id, "error": str(exc)})
+    if updates:
+        updates["status"] = "POSTED"
+        updates["posted_at"] = server_timestamp()
+        update_draft(settings.workspace_id, draft_id, updates)
 
-    if chat_id and message_id:
-        bot.safe_delete_message(chat_id, message_id, draft_id=draft_id)
+    draft = get_draft(settings.workspace_id, draft_id)
+    if draft and chat_id and message_id:
+        _refresh_review_message(draft, chat_id=chat_id, message_id=message_id)
 
 
 def _red_review(
@@ -638,8 +677,8 @@ def _red_review(
 
     if post_targets in ("tg", "both"):
         context_text = origin_text
-        if draft.get("red_text"):
-            context_text = f"{origin_text}\n\nPrevious redaction:\n{draft.get('red_text')}"
+        if draft.get("tg_text"):
+            context_text = f"{origin_text}\n\nPrevious redaction:\n{draft.get('tg_text')}"
         workspace = _workspace_config()
         prompt = get_prompt(workspace.get("gpt_profile"))
         try:
@@ -651,10 +690,10 @@ def _red_review(
         if summary.get("skip") is True:
             update_draft(settings.workspace_id, draft_id, {"status": "SKIPPED"})
             return
-        updates["red_text"] = _build_red_text(summary, origin_text)
+        updates["tg_text"] = _build_tg_text(summary, origin_text)
 
     if post_targets in ("social", "both"):
-        updates["twitter_text"] = _safe_generate_tweet(editor, origin_text, draft_id)
+        updates["social_text"] = _safe_generate_social(editor, origin_text, draft_id)
 
     update_draft(settings.workspace_id, draft_id, updates)
     draft = get_draft(settings.workspace_id, draft_id)
@@ -662,16 +701,26 @@ def _red_review(
         _refresh_review_message(draft, chat_id=chat_id, message_id=message_id)
 
 
-def _build_review_keyboard(draft_id: str) -> dict[str, Any]:
-    return {
-        "inline_keyboard": [
-            [
-                {"text": "POST", "callback_data": _build_callback_data(draft_id, "post_review")},
-                {"text": "RED", "callback_data": _build_callback_data(draft_id, "red_review")},
-                {"text": "SKIP", "callback_data": _build_callback_data(draft_id, "skip_review")},
-            ]
-        ]
-    }
+def _build_review_keyboard(draft_id: str, draft: dict | None = None) -> dict[str, Any]:
+    d = draft or {}
+    post_targets = d.get("post_targets") or "tg"
+    tg_posted = d.get("tg_posted", False)
+    tw_posted = d.get("twitter_posted", False)
+    th_posted = d.get("threads_posted", False)
+    any_posted = tg_posted or tw_posted or th_posted
+
+    row1 = []
+    if post_targets in ("tg", "both"):
+        row1.append({"text": "✅ TG" if tg_posted else "📢 TG", "callback_data": _build_callback_data(draft_id, "post_tg_review")})
+    if post_targets in ("social", "both"):
+        row1.append({"text": "✅ Twitter" if tw_posted else "🐦 Twitter", "callback_data": _build_callback_data(draft_id, "post_twitter_review")})
+        row1.append({"text": "✅ Threads" if th_posted else "🧵 Threads", "callback_data": _build_callback_data(draft_id, "post_threads_review")})
+
+    row2 = [
+        {"text": "🔄 RED", "callback_data": _build_callback_data(draft_id, "red_review")},
+        {"text": "✓ Done" if any_posted else "❌ Skip", "callback_data": _build_callback_data(draft_id, "skip_review")},
+    ]
+    return {"inline_keyboard": [row1, row2]}
 
 
 def _refresh_review_message(
@@ -680,7 +729,7 @@ def _refresh_review_message(
     message_id: int | None,
 ) -> None:
     text = _format_review_text(draft)
-    keyboard = _build_review_keyboard(draft["id"])
+    keyboard = _build_review_keyboard(draft["id"], draft)
     if chat_id and message_id:
         try:
             bot.edit_message_text(

@@ -69,7 +69,7 @@ class OpenAIEditor:
         parsed["_tokens"] = response.usage.total_tokens if response.usage else None
         return parsed
 
-    def generate_tweet(self, text: str) -> str:
+    def generate_social(self, text: str) -> str:
         twitter_prompt = get_prompt("social")
         response = self.client.chat.completions.create(
             model=self._model,

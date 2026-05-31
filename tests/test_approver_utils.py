@@ -2,7 +2,7 @@ import pytest
 from services.approver.main import (
     _parse_callback_data,
     _build_callback_data,
-    _build_red_text,
+    _build_tg_text,
     _format_publish_text,
     _format_review_text,
 )
@@ -29,62 +29,62 @@ class TestCallbackData:
             assert _parse_callback_data(data) == ("test-123", action)
 
     def test_all_review_actions(self):
-        for action in ("post_review", "red_review", "skip_review"):
+        for action in ("post_tg_review", "post_twitter_review", "post_threads_review", "red_review", "skip_review"):
             data = _build_callback_data("test-456", action)
             assert _parse_callback_data(data) == ("test-456", action)
 
 
-class TestBuildRedText:
+class TestBuildTgText:
     def test_title_and_body(self):
-        result = _build_red_text({"title": "Заголовок", "body": "Текст"}, "fallback")
+        result = _build_tg_text({"title": "Заголовок", "body": "Текст"}, "fallback")
         assert result == "Заголовок\n\nТекст"
 
     def test_title_only(self):
-        result = _build_red_text({"title": "Тільки заголовок", "body": ""}, "fallback")
+        result = _build_tg_text({"title": "Тільки заголовок", "body": ""}, "fallback")
         assert result == "Тільки заголовок"
 
     def test_body_only(self):
-        result = _build_red_text({"title": "", "body": "Тільки тіло"}, "fallback")
+        result = _build_tg_text({"title": "", "body": "Тільки тіло"}, "fallback")
         assert result == "Тільки тіло"
 
     def test_empty_uses_fallback(self):
-        result = _build_red_text({"title": "", "body": ""}, "fallback text")
+        result = _build_tg_text({"title": "", "body": ""}, "fallback text")
         assert result == "fallback text"
 
 
 class TestFormatPublishText:
-    def test_uses_red_text_when_available(self):
-        draft = {"red_text": "Готовий текст", "origin_text": "Сирець"}
+    def test_uses_tg_text_when_available(self):
+        draft = {"tg_text": "Готовий текст", "origin_text": "Сирець"}
         assert _format_publish_text(draft) == "Готовий текст"
 
     def test_falls_back_to_origin(self):
-        draft = {"red_text": "", "origin_text": "Сирець"}
+        draft = {"tg_text": "", "origin_text": "Сирець"}
         assert _format_publish_text(draft) == "Сирець"
 
-    def test_none_red_text_falls_back(self):
-        draft = {"red_text": None, "origin_text": "Сирець"}
+    def test_none_tg_text_falls_back(self):
+        draft = {"tg_text": None, "origin_text": "Сирець"}
         assert _format_publish_text(draft) == "Сирець"
 
 
 class TestFormatReviewText:
     def test_tg_target_shows_label(self):
-        draft = {"id": "src-1", "post_targets": "tg", "red_text": "Текст поста"}
+        draft = {"id": "src-1", "post_targets": "tg", "tg_text": "Текст поста"}
         result = _format_review_text(draft)
         assert "[TG]" in result
         assert "Текст поста" in result
 
     def test_social_target_shows_social_label(self):
-        draft = {"id": "src-2", "post_targets": "social", "twitter_text": "Провокаційний твіт"}
+        draft = {"id": "src-2", "post_targets": "social", "social_text": "Провокаційний пост"}
         result = _format_review_text(draft)
         assert "[Social]" in result
-        assert "Провокаційний твіт" in result
+        assert "Провокаційний пост" in result
 
     def test_both_target_shows_both_texts(self):
         draft = {
             "id": "src-3",
             "post_targets": "both",
-            "red_text": "TG текст",
-            "twitter_text": "Social текст",
+            "tg_text": "TG текст",
+            "social_text": "Social текст",
         }
         result = _format_review_text(draft)
         assert "[TG + Social]" in result
@@ -92,12 +92,12 @@ class TestFormatReviewText:
         assert "Social текст" in result
 
     def test_default_target_is_tg(self):
-        draft = {"id": "src-4", "red_text": "Текст"}
+        draft = {"id": "src-4", "tg_text": "Текст"}
         result = _format_review_text(draft)
         assert "[TG]" in result
 
     def test_html_escaped(self):
-        draft = {"id": "src-5", "post_targets": "tg", "red_text": "<script>alert(1)</script>"}
+        draft = {"id": "src-5", "post_targets": "tg", "tg_text": "<script>alert(1)</script>"}
         result = _format_review_text(draft)
         assert "<script>" not in result
         assert "&lt;script&gt;" in result

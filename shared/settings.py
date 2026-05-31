@@ -36,6 +36,11 @@ class Settings(BaseSettings):
     twitter_access_token: str | None = Field(default=None, alias="TWITTER_ACCESS_TOKEN")
     twitter_access_secret: str | None = Field(default=None, alias="TWITTER_ACCESS_SECRET")
 
+    threads_app_id: str | None = Field(default=None, alias="THREADS_APP_ID")
+    threads_app_secret: str | None = Field(default=None, alias="THREADS_APP_SECRET")
+    threads_access_token: str | None = Field(default=None, alias="THREADS_ACCESS_TOKEN")
+    threads_user_id: str | None = Field(default=None, alias="THREADS_USER_ID")
+
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
 
 
