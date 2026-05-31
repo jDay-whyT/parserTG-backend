@@ -132,11 +132,7 @@ async def telegram_webhook_validation() -> dict[str, bool]:
 
 
 @app.post("/telegram/webhook")
-async def telegram_webhook(request: Request, background_tasks: BackgroundTasks, x_telegram_bot_api_secret_token: str | None = Header(default=None)) -> dict[str, str]:
-    if settings.tg_bot_token and x_telegram_bot_api_secret_token and x_telegram_bot_api_secret_token != settings.tg_bot_token:
-        logger.warning("telegram_webhook_invalid_secret")
-        return {"status": "unauthorized"}
-
+async def telegram_webhook(request: Request, background_tasks: BackgroundTasks) -> dict[str, str]:
     try:
         update = await request.json()
     except Exception as exc:  # noqa: BLE001 - log and continue for webhook resilience

@@ -18,7 +18,7 @@ GPT-фільтрація, генерація постів у двох форма
 - **Posting:** python-telegram-bot (TG канал), tweepy (Twitter)
 - **Infra:** Google Cloud Run Jobs + Cloud Run Services + Cloud Scheduler
 - **Secrets:** Google Secret Manager (ніяких ключів у коді або .env у репо)
-- **Region:** `us-central1`
+- **Region:** `europe-west1`
 
 ---
 
