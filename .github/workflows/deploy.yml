@@ -99,6 +99,10 @@ jobs:
             TWITTER_API_SECRET
             TWITTER_ACCESS_TOKEN
             TWITTER_ACCESS_SECRET
+            THREADS_APP_ID
+            THREADS_APP_SECRET
+            THREADS_ACCESS_TOKEN
+            THREADS_USER_ID
           )
           for secret in "${required_secrets[@]}"; do
             enabled_version="$(gcloud secrets versions list "$secret" --project "$PROJECT_ID" \
@@ -125,6 +129,10 @@ jobs:
             TWITTER_API_SECRET
             TWITTER_ACCESS_TOKEN
             TWITTER_ACCESS_SECRET
+            THREADS_APP_ID
+            THREADS_APP_SECRET
+            THREADS_ACCESS_TOKEN
+            THREADS_USER_ID
           )
           missing=()
 
@@ -184,7 +192,7 @@ jobs:
             --allow-unauthenticated \
             --service-account "tg-parser-runner@$PROJECT_ID.iam.gserviceaccount.com" \
             --set-env-vars WORKSPACE_ID="$WORKSPACE_ID" \
-            --set-secrets OPENROUTER_API_KEY=OPENROUTER_API_KEY:latest,TG_BOT_TOKEN=TG_BOT_TOKEN:latest,TWITTER_API_KEY=TWITTER_API_KEY:latest,TWITTER_API_SECRET=TWITTER_API_SECRET:latest,TWITTER_ACCESS_TOKEN=TWITTER_ACCESS_TOKEN:latest,TWITTER_ACCESS_SECRET=TWITTER_ACCESS_SECRET:latest
+            --set-secrets OPENROUTER_API_KEY=OPENROUTER_API_KEY:latest,TG_BOT_TOKEN=TG_BOT_TOKEN:latest,TWITTER_API_KEY=TWITTER_API_KEY:latest,TWITTER_API_SECRET=TWITTER_API_SECRET:latest,TWITTER_ACCESS_TOKEN=TWITTER_ACCESS_TOKEN:latest,TWITTER_ACCESS_SECRET=TWITTER_ACCESS_SECRET:latest,THREADS_APP_ID=THREADS_APP_ID:latest,THREADS_APP_SECRET=THREADS_APP_SECRET:latest,THREADS_ACCESS_TOKEN=THREADS_ACCESS_TOKEN:latest,THREADS_USER_ID=THREADS_USER_ID:latest
 
           APPROVER_URL="$(gcloud run services describe approver --region "$REGION" --project "$PROJECT_ID" --format='value(status.url)')"
           PROCESSOR_IMAGE="$REGION-docker.pkg.dev/$PROJECT_ID/$AR_REPO/processor:${{ github.sha }}"
