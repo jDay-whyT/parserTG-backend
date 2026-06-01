@@ -20,7 +20,7 @@ class Settings(BaseSettings):
 
     openrouter_api_key: str | None = Field(default=None, alias="OPENROUTER_API_KEY")
     openrouter_base_url: str = Field(default="https://openrouter.ai/api/v1", alias="OPENROUTER_BASE_URL")
-    openrouter_model: str = Field(default="deepseek/deepseek-chat:free", alias="OPENROUTER_MODEL")
+    openrouter_model: str = Field(default="meta-llama/llama-3.3-70b-instruct:free", alias="OPENROUTER_MODEL")
 
     tg_bot_token: str | None = Field(default=None, alias="TG_BOT_TOKEN")
 
