@@ -31,6 +31,7 @@ class OpenAIEditor:
             self.client = OpenAI(
                 api_key=settings.openrouter_api_key,
                 base_url=settings.openrouter_base_url,
+                max_retries=5,
             )
             self._model = settings.openrouter_model
             logger.info("llm_backend", extra={"backend": "openrouter", "model": self._model})
