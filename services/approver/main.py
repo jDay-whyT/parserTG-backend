@@ -242,6 +242,10 @@ def _format_review_text(draft: dict[str, Any]) -> str:
         social_text = (draft.get("social_text") or "").strip()
         if social_text:
             parts.append(f"[Social]\n{html.escape(social_text)}")
+        elif post_targets == "social":
+            origin_text = (draft.get("origin_text") or "").strip()
+            if origin_text:
+                parts.append(html.escape(origin_text))
 
     return "\n\n".join(parts).strip()
 
