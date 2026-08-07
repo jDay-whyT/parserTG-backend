@@ -20,6 +20,7 @@ RUN python -m pip install -U pip setuptools wheel \
     && pip install --no-cache-dir --verbose -r requirements.txt
 
 COPY shared ./shared
+COPY persona ./persona
 COPY services/approver ./services/approver
 COPY tools ./tools
 
