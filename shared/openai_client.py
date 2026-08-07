@@ -79,12 +79,9 @@ class OpenAIEditor:
                 {"role": "user", "content": text},
             ],
             temperature=0.7,
-            max_tokens=150,
+            max_tokens=220,
         )
-        result = (response.choices[0].message.content or "").strip()
-        if len(result) > 280:
-            result = result[:277] + "..."
-        return result
+        return (response.choices[0].message.content or "").strip()
 
     def generate_image(self, prompt: str) -> str:
         response = self.client.images.generate(
