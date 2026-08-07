@@ -170,6 +170,19 @@ def _workspace_config() -> dict[str, Any]:
     return workspace.data
 
 
+def _alert_publish_failure(draft_id: str, platform: str, error: str) -> None:
+    workspace = _workspace_config()
+    admin_chat_id = workspace.get("tg_group_chat_id")
+    if not admin_chat_id:
+        return
+    review_thread_id = workspace.get("review_thread_id")
+    text = f"⚠️ Publish failed: {platform}\ndraft: {draft_id}\n{html.escape(error)}"
+    try:
+        bot.send_message(admin_chat_id, text, message_thread_id=review_thread_id)
+    except Exception as exc:  # noqa: BLE001 - alerting must never break the publish flow
+        logger.warning("publish_failure_alert_failed", extra={"draft_id": draft_id, "platform": platform, "error": str(exc)})
+
+
 def _send_review_message(draft: dict[str, Any]) -> int | None:
     workspace = _workspace_config()
     admin_chat_id = workspace.get("tg_group_chat_id")
@@ -598,9 +611,11 @@ def _post_platform(
             response = bot.send_message(publish_channel, tg_text)
         except TelegramAPIError as exc:
             _log_telegram_bad_request(exc, "publish", draft_id=draft_id, chat_id=publish_channel, text=tg_text)
+            _alert_publish_failure(draft_id, "tg", str(exc))
             return
         except Exception as exc:  # noqa: BLE001
             logger.warning("telegram_publish_failed", extra={"draft_id": draft_id, "error": str(exc)})
+            _alert_publish_failure(draft_id, "tg", str(exc))
             return
         published_message_id = response.get("result", {}).get("message_id")
         if published_message_id:
@@ -626,6 +641,7 @@ def _post_platform(
         social_text = (draft.get("social_text") or "").strip()
         if not social_text:
             logger.warning("social_text_missing_for_twitter", extra={"draft_id": draft_id})
+            _alert_publish_failure(draft_id, "twitter", "social_text missing")
             return
         try:
             tweet_id = post_tweet(social_text)
@@ -633,6 +649,7 @@ def _post_platform(
                 updates["twitter_post_id"] = tweet_id
         except Exception as exc:  # noqa: BLE001
             logger.warning("twitter_post_failed", extra={"draft_id": draft_id, "error": str(exc)})
+            _alert_publish_failure(draft_id, "twitter", str(exc))
             return
         updates["twitter_posted"] = True
 
@@ -642,6 +659,7 @@ def _post_platform(
         social_text = (draft.get("social_text") or "").strip()
         if not social_text:
             logger.warning("social_text_missing_for_threads", extra={"draft_id": draft_id})
+            _alert_publish_failure(draft_id, "threads", "social_text missing")
             return
         try:
             thread_id = post_thread(social_text)
@@ -649,6 +667,7 @@ def _post_platform(
                 updates["threads_post_id"] = thread_id
         except Exception as exc:  # noqa: BLE001
             logger.warning("threads_post_failed", extra={"draft_id": draft_id, "error": str(exc)})
+            _alert_publish_failure(draft_id, "threads", str(exc))
             return
         updates["threads_posted"] = True
 
